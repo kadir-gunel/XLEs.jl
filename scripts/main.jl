@@ -114,6 +114,15 @@ for trg in ["es"]
         flush(io)
         close(io)
 
+        using BSON: @save, @load
+        Wa = W |> Array
+        @save "../../Wa.bson" Wa;
+        s = src_idx |> Array ;
+        t = trg_idx |> Array;
+        @save "../../src.bson" s;
+        @save "../../trg.bson" t;
+
+        trg_idx
 
         XW, YW = advancedMapping(X |> permutedims, Y |> permutedims , src_idx, trg_idx)
         XW_replaced = replaceSingulars(XW |> permutedims) |> permutedims

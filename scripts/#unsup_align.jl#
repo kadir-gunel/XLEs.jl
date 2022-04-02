@@ -1,0 +1,23 @@
+using OhMyREPL
+using LinearAlgebra
+using Statistics
+using Random
+using OptimalTransport
+
+
+
+    
+function convex_init(X, Y; iters=100, reg=.05, apply_sqrt=false)
+    c, r = size(X)
+    isequal(apply_sqrt, true) ?  map!(sqrt_eig, [X, Y]) : nothing
+    covX = X' * X
+    covY = Y' * Y 
+    CovY = CovY * norm(covX) /  norm(covY)
+    Cov2X = covX * covX
+    Cov2Y = covY * covY
+    P = ones(Float32, r, r) / r
+    for it in 1:iters
+        G = (P * Cov2X) + (Cov2Y * P) - 2 * (covY * P * covX)
+        q = 
+    end
+end
