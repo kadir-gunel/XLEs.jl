@@ -142,7 +142,7 @@ function buildDictionary(metric::Symbol=:CosineDist)
     map(space -> sort!(space, dims=1), [cosx, cosy]);
     cosx, cosy = map(normalizeEmbedding, [cosx, cosy]);
     sim = csls(cosx' * cosy);
-    
+
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
 
@@ -165,28 +165,107 @@ end
 
 
 function calcobjective(sim)
-    bestfward = mean(CUDA.CUBLAS.maximum(sim, dims=2)) 
-    # bestbward = mean(CUDA.CUBLAS.maximum(permutedims(sim), dims=2))
-    # objective = (bestfward + bestbward) / 2
+    bestfward = mean(CUDA.CUBLAS.maximum(sim, dims=2))
+    bestbward = mean(CUDA.CUBLAS.maximum(permutedims(sim), dims=2))
+    objective = (bestfward + bestbward) / 2
 end
+
+
+function mahalanobis(subx, suby; ssize::Int64=Int(2.2e2))
+    d, w = size(subx)
+    D = reshape(subx, (d, w, 1)) .- reshape(suby, (d, 1, w))
+    D = reshape(D, (d, w * w))
+    C = pinv(subx * suby') # 300x300
+    sim = reshape(diag(D' * C' * D), (w, w))
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+    return src_idx, trg_idx
+end
+
+function mahalanobis1(subx, suby;sim_size::Int64=Int(4e3))
+    d, w = size(subx)
+    C = pinv(subx * suby')'
+    distMah = zeros(w, w)
+    for i in 1:w
+        for j in 1:w
+            dist = subx[:, i] - suby[:, j];
+            distMah[i, j]  = dist' * C * dist
+        end
+    end
+    return distMah
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
+    return src_idx, trg_idx
+end
+
+function mahalanobisGPU(subx, suby)
+    d, wx = size(subx)
+    wy = size(suby, 2)
+    data = hcat(subx, suby)
+    C = cov(data |> permutedims)
+    distMah = CUDA.zeros(wx, wy)
+   
+    for i in 1:wx
+        dist = subx[:, i] .- suby;
+        distMah[i, :] = sum((C \ dist) .* dist, dims=1)
+    end
+    @. distMah = sqrt(distMah)
+    sort!(distMah, dims=1)
+    src_idx = vec(vcat(collect(1:wx), permutedims(CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=1), 1))|> Array));
+    trg_idx = vec(vcat((CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=2),2))|> Array, collect(1:wy)));
+    return src_idx, trg_idx
+end
+    
+function mahalanobis2(subx, suby)
+
+    d, w = size(subx)
+    data = hcat(subx, suby)
+    C = cov(permutedims(data))
+    distMah = zeros(w, w)
+    @threads for i in 1:w
+        dist = repeat(subx[:, i], outer=[1, w]) - suby
+        distMah[:, i] = sum((C \ dist).* dist, dims=1)
+    end
+    return @. sqrt(distMah)
+end
+
+
+function parallelMahalanobis1(subx, suby; sim_size::Int64=Int(4e3))
+    d, w = size(subx)
+    C = pinv(subx * suby')'
+    distMah = similar(subx, w, w)
+    
+    @threads for j in 1:w
+        for i in 1:w
+            distMah[i, j] = @views ((subx[:, i] - suby[:, j])' * C' * (subx[:, i] - suby[:, j]))
+        end
+    end
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
+    return src_idx, trg_idx
+end
+
 
 
 
 function buildMahalanobisDictionary(subx::Matrix, suby::Matrix; sim_size::Int64=Int(4e3))
     distx, disty = map(space -> Mahalanobis(space * space'), [subx, suby])
+
     mahx = pairwise(distx, subx) |> cu
     mahy = pairwise(disty, suby) |> cu
+
     sort!(mahx, dims=1)
     sort!(mahy, dims=1)
+
     mahx, mahy = map(normalizeEmbedding, [mahx, mahy])
-    
+
     sim = mahx' * mahy
-    
+
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-    
+
     objective = calcobjective(sim)
-    
+
     return src_idx, trg_idx, objective
 end
 
@@ -200,25 +279,25 @@ end
 
 function train2(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, trg_size::Int64, keep_prob::Float64,
                 objective::T2; stop::Bool=false, lambda::Float32=Float32(.1)) where {T, T1, T2}
-    
+
     src_idx_forward  = cu(collect(1:src_size));
     trg_idx_backward = collect(1:trg_size);
-    
+
     W, _ = mapOrthogonal(X[:, src_idx], Y[:, trg_idx], λ=lambda)
-    
+
     if stop
         return src_idx, trg_idx, objective, W  # returning the results
     end
-    
+
     XW = W * X;
-    
+
     src_idx, trg_idx, objective = buildMahalanobisDictionary(XW |> Array, Y |> Array, sim_size=src_size)
     #trg_idx_forward,  best_sim_forward  = update(Y, XW, keep_prob)
     #src_idx_backward, best_sim_backward = update(XW, Y, keep_prob)
-    
+
     #src_idx = vcat(src_idx_forward, src_idx_backward)
     #trg_idx = vcat(trg_idx_forward, trg_idx_backward)
-    
+
     #objective = (mean(best_sim_forward) + mean(best_sim_backward)) / 2
     return src_idx, trg_idx, objective, W
 end
