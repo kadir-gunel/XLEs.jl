@@ -6,6 +6,7 @@ using CUDA
 using Parameters
 using Distances
 
+
 CUDA.allowscalar(true)
 atype = isequal(CUDA.functional(), true) ? cu : Array;
 
@@ -177,9 +178,9 @@ function mahalanobis(subx, suby; ssize::Int64=Int(2.2e2))
     D = reshape(D, (d, w * w))
     C = pinv(subx * suby') # 300x300
     sim = reshape(diag(D' * C' * D), (w, w))
-    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
-    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-    return src_idx, trg_idx
+    # src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    # trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+    return sim #, src_idx, trg_idx
 end
 
 function mahalanobis1(subx, suby;sim_size::Int64=Int(4e3))
@@ -204,48 +205,54 @@ function mahalanobisGPU(subx, suby)
     data = hcat(subx, suby)
     C = cov(data |> permutedims)
     distMah = CUDA.zeros(wx, wy)
-   
     for i in 1:wx
         dist = subx[:, i] .- suby;
         distMah[i, :] = sum((C \ dist) .* dist, dims=1)
     end
     @. distMah = sqrt(distMah)
-    sort!(distMah, dims=1)
-    src_idx = vec(vcat(collect(1:wx), permutedims(CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=1), 1))|> Array));
-    trg_idx = vec(vcat((CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=2),2))|> Array, collect(1:wy)));
-    return src_idx, trg_idx
+    # sort!(distMah, dims=1)
+    #src_idx = vec(vcat(collect(1:wx), permutedims(CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=1), 1))|> Array));
+    #trg_idx = vec(vcat((CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=2),2))|> Array, collect(1:wy)));
+    return distMah # , src_idx, trg_idx
 end
     
-function mahalanobis2(subx, suby)
 
-    d, w = size(subx)
-    data = hcat(subx, suby)
-    C = cov(permutedims(data))
-    distMah = zeros(w, w)
-    @threads for i in 1:w
-        dist = repeat(subx[:, i], outer=[1, w]) - suby
-        distMah[:, i] = sum((C \ dist).* dist, dims=1)
-    end
-    return @. sqrt(distMah)
-end
 
 
 function parallelMahalanobis1(subx, suby; sim_size::Int64=Int(4e3))
     d, w = size(subx)
-    C = pinv(subx * suby')'
+    C = inv(subx * suby')
     distMah = similar(subx, w, w)
     
     @threads for j in 1:w
         for i in 1:w
-            distMah[i, j] = @views ((subx[:, i] - suby[:, j])' * C' * (subx[:, i] - suby[:, j]))
+            distMah[i, j] = @views ((subx[:, i] .- suby[:, j])' * C * (subx[:, i] .- suby[:, j]))
         end
     end
-    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
-    trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
-    return src_idx, trg_idx
+    #src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
+    #trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
+    return distMah #, src_idx, trg_idx
+end
+
+function buildDictionary(subx, suby; sim_size::Int64=Int(4e3))
+    distXY = Mahalanobis(subx * suby', skipchecks=true)
+    sim = pairwise(distXY, subx, suby) |> cu
+
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+    
+    src_idx, trg_idx
 end
 
 
+
+
+function update(xw, y)
+    
+
+    
+
+end    
 
 
 function buildMahalanobisDictionary(subx::Matrix, suby::Matrix; sim_size::Int64=Int(4e3))
@@ -263,8 +270,6 @@ function buildMahalanobisDictionary(subx::Matrix, suby::Matrix; sim_size::Int64=
 
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-
-    objective = calcobjective(sim)
 
     return src_idx, trg_idx, objective
 end
