@@ -5,6 +5,8 @@ using Statistics: mean, var
 using CUDA
 using Parameters
 using Distances
+using TransferEntropy
+using Printf
 
 
 CUDA.allowscalar(true)
@@ -68,6 +70,16 @@ end
 simSize(X::T, Y::T; unsupervised_vocab::Int64=4000) where {T}  =
                 unsupervised_vocab <= 0 ? min(size(X, 2) , size(Y, 2)) : min(size(X, 2) , size(Y, 2), unsupervised_vocab)
 
+function sqrt_eigen(subE)
+    F = svd(subE)
+    F.U * diagm(sqrt.(F.S)) * F.Vt
+end
+
+function correlation(E::Matrix; ssize::Int64=Int(4e3))
+    F = svd(E[:, 1:ssize])
+    F.V * diagm(F.S) * F.Vt
+end   
+
 function cudaCorrelationMatrix(E::CuArray; sim_size::Int64=4000)
     F = CUDA.CUBLAS.svd(E[:, 1:sim_size]) # F is object of SVD
     (F.V .* F.S') * F.Vt;
@@ -81,28 +93,26 @@ end
 
 cutVocabulary(X::T; vocabulary_cutoff::Int64=20000) where {T} = vocabulary_cutoff <= 0  ? size(X, 2) : min(size(X, 2), vocabulary_cutoff)
 
+function buildSeedDictionary0(X::T, Y::T; sim_size::Int64=4000) where {T}
+    # sims = map(cudaCorrelationMatrix, [X, Y])
+    X, Y = map(XLEs.sqrt_eigen, [X, Y])
+    xsim = X' * X |> cu
+    ysim = Y' * Y |> cu
+    sort!(ysim, dims=1)
+    sort!(xsim, dims=1)
+    # map(sim -> sort!(sim, dims=1), sims);
+    xsim, ysim = map(normalizeEmbedding, [xsim, ysim])
+    sim = xsim' * ysim; # actually this is still the cosine similarity from X -> Z.
+    # csls_neighborhood = 10
 
-function findLowestConditions(E::L; n::Int=Int(20e3), rev::Bool=false) where {L}
-    c, r = size(E)
-    @views T = reshape(E, (c, 400, 500));
-    C = @views map(i -> log2(cond(T[:, :, i] * T[:, :, i]')), collect(1:500))
-    C_sorted = sortperm(C, rev=rev);
-    s = div(n, 400)
-    takens = collect(take(C_sorted, s)) |> sort;
-    return reshape(T[:, :, takens], (c, n)) # makes a 20e3 Dictionary
+    sim = csls(sim)
+
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+
+    return src_idx, trg_idx
 end
 
-function buildSubSpace(E::L; parts::Int=size(E, 2), rev::Bool=false) where {L}
-    c, r = size(E)
-    samples = div(r, parts)
-    @views T = reshape(E, (c, samples, parts));
-    C = Array{Float32}(undef, parts)
-    @threads for i in 1:parts
-        @views C[i] =  log2(cond(T[:, :, i] * permutedims(T[:, :, i])))
-    end
-    idx = sortperm(C, rev=rev) |> Array
-    return reshape(T[:, :, idx], (c, samples * parts)), idx
-end
 
 
 function buildSeedDictionary(X::T, Y::T; sim_size::Int64=4000) where {T}
@@ -115,6 +125,7 @@ function buildSeedDictionary(X::T, Y::T; sim_size::Int64=4000) where {T}
     xsim, ysim = map(normalizeEmbedding, [xsim, ysim])
     sim = xsim' * ysim; # actually this is still the cosine similarity from X -> Z.
     # csls_neighborhood = 10
+
     sim = csls(sim)
 
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
@@ -135,6 +146,9 @@ function updateDictionary(X, Y, keep_prob::Float64; direction::Symbol=:forward)
     return vec(idx), vec(best_sim)
 end
 
+dist2sim(M::Matrix) = 1 ./ exp.(M)
+
+
 
 function buildDictionary(metric::Symbol=:CosineDist)
 
@@ -147,6 +161,109 @@ function buildDictionary(metric::Symbol=:CosineDist)
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
 
+    return src_idx, trg_idx
+end
+
+
+function calculateMahalanobis(A::Matrix)
+    dist = Mahalanobis(A * A');
+    simA = pairwise(dist, A) |> dist2sim;
+    sort!(simA, dims=1)
+    return simA |> normalizeEmbedding
+end
+
+function buildMahalanobisDictionary(subx::Matrix, suby::Matrix; sim_size::Int64=Int(4e3))
+    @time mahx = XLEs.calculateMahalanobis(subx)
+    @time mahy = XLEs.calculateMahalanobis(suby)
+    sim = mahx' * mahy
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+    return src_idx, trg_idx
+end
+
+function calculateMahalanobis(A::Matrix, B::Matrix)
+    Q = A * B';
+    Q = (Q * Q') ./ 2
+    distAB = pairwise(Mahalanobis(Q, skipchecks=true), A, B)
+    return distAB |> dist2sim
+end
+
+
+function updateMahalanobis(A::Matrix, B::Matrix, keep_prob::Float64)
+    sim = calculateMahalanobis(A, B) |> cu;
+    revsim = sim |> permutedims;
+
+    bestsim = CUDA.CUBLAS.maximum(revsim, dims=2)
+    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
+    return src_idx, trg_idx, vec(bestsim)
+
+    # knnsim  = topk_mean(sim, 1, inplace=true)
+    # bestsim = CUDA.CUBLAS.maximum(revsim, dims=2)
+
+    # revsim  = revsim - (CUDA.ones(Float32, size(sim)) .* (transpose(knnsim / 2)))
+    # idx = getindex.(argmax(CUDA.CUDNN.cudnnDropoutForward(revsim, dropout=1 - keep_prob), dims=2), 2)
+
+    # return vec(idx), vec(bestsim)
+
+end
+
+#=
+function updateMahalanobis(A::Matrix, B::Matrix, keep_prob::Float64)
+    mahA = calculateMahalanobis(A);
+    mahB = calculateMahalanobis(B);
+
+    sim = permutedims(mahA) * mahB
+    revsim = sim |> Array |> permutedims |> cu
+
+    knnsim  = topk_mean(sim, 10, inplace=true)
+    bestsim = CUDA.CUBLAS.maximum(revsim, dims=2)
+
+    revsim  = revsim - (CUDA.ones(Float32, size(sim)) .* (transpose(knnsim / 2)))
+    idx = getindex.(argmax(CUDA.CUDNN.cudnnDropoutForward(revsim, dropout=1 - keep_prob), dims=2), 2)
+
+    return vec(idx), vec(bestsim)
+end
+=#
+
+function buildMIDictionary(subx::Matrix, suby::Matrix)
+    @printf "Calculating Mutual Information : \n"
+    d, w = size(subx)
+    mix = Matrix{Float32}(undef, w, w);
+    miy = Matrix{Float32}(undef, w, w);
+    @threads for i in axes(subx, 2)
+        for j in axes(subx, 2)
+            @views mix[i, j] = mutualinfo(subx[:, i], subx[:, j], Kraskov2(5))
+            @views miy[i, j] = mutualinfo(suby[:, i], suby[:, j], Kraskov2(5))
+        end
+    end
+    simX = mix |> dist2sim |> cu
+    simY = miy |> dist2sim |> cu
+    @printf "Calculating Similarities : \n"
+    sort!(simX, dims=1)
+    sort!(simY, dims=1)
+
+    simX, simY = map(normalizeEmbedding, [simX, simY])
+    sim = simX' * simY
+
+    src_idx = vec(vcat(collect(1:w), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:w)))
+    return src_idx, trg_idx
+end
+
+
+function buildMIDictionary2(subx::Matrix, suby::Matrix)
+    @printf "Calculating Mutual Information : \n"
+    d, w = size(subx);
+    dist = Matrix{Float32}(undef, w, w);
+    @threads for i in axes(subx, 2)
+        for j in axes(suby, 2)
+            dist[i, j] = @views mutualinfo(subx[:, i], suby[:, j], Kraskov2(5))
+        end
+    end
+    sim = dist |> dist2sim |> normalizeEmbedding |> cu;
+    src_idx = vec(vcat(collect(1:w), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
+    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:w)))
     return src_idx, trg_idx
 end
 
@@ -165,116 +282,6 @@ function update(A, B, keep_prob::Float64)
 end
 
 
-function calcobjective(sim)
-    bestfward = mean(CUDA.CUBLAS.maximum(sim, dims=2))
-    bestbward = mean(CUDA.CUBLAS.maximum(permutedims(sim), dims=2))
-    objective = (bestfward + bestbward) / 2
-end
-
-
-function mahalanobis(subx, suby; ssize::Int64=Int(2.2e2))
-    d, w = size(subx)
-    D = reshape(subx, (d, w, 1)) .- reshape(suby, (d, 1, w))
-    D = reshape(D, (d, w * w))
-    C = pinv(subx * suby') # 300x300
-    sim = reshape(diag(D' * C' * D), (w, w))
-    # src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
-    # trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-    return sim #, src_idx, trg_idx
-end
-
-function mahalanobis1(subx, suby;sim_size::Int64=Int(4e3))
-    d, w = size(subx)
-    C = pinv(subx * suby')'
-    distMah = zeros(w, w)
-    for i in 1:w
-        for j in 1:w
-            dist = subx[:, i] - suby[:, j];
-            distMah[i, j]  = dist' * C * dist
-        end
-    end
-    return distMah
-    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
-    trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
-    return src_idx, trg_idx
-end
-
-function mahalanobisGPU(subx, suby)
-    d, wx = size(subx)
-    wy = size(suby, 2)
-    data = hcat(subx, suby)
-    C = cov(data |> permutedims)
-    distMah = CUDA.zeros(wx, wy)
-    for i in 1:wx
-        dist = subx[:, i] .- suby;
-        distMah[i, :] = sum((C \ dist) .* dist, dims=1)
-    end
-    @. distMah = sqrt(distMah)
-    # sort!(distMah, dims=1)
-    #src_idx = vec(vcat(collect(1:wx), permutedims(CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=1), 1))|> Array));
-    #trg_idx = vec(vcat((CUDA.CUBLAS.getindex.(CUDA.CUBLAS.argmax(distMah, dims=2),2))|> Array, collect(1:wy)));
-    return distMah # , src_idx, trg_idx
-end
-    
-
-
-
-function parallelMahalanobis1(subx, suby; sim_size::Int64=Int(4e3))
-    d, w = size(subx)
-    C = inv(subx * suby')
-    distMah = similar(subx, w, w)
-    
-    @threads for j in 1:w
-        for i in 1:w
-            distMah[i, j] = @views ((subx[:, i] .- suby[:, j])' * C * (subx[:, i] .- suby[:, j]))
-        end
-    end
-    #src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(distMah, dims=1), 1))|> Array))
-    #trg_idx = vec(vcat((getindex.(argmax(distMah, dims=2),2))|> Array, collect(1:sim_size)))
-    return distMah #, src_idx, trg_idx
-end
-
-function buildDictionary(subx, suby; sim_size::Int64=Int(4e3))
-    distXY = Mahalanobis(subx * suby', skipchecks=true)
-    sim = pairwise(distXY, subx, suby) |> cu
-
-    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
-    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-    
-    src_idx, trg_idx
-end
-
-
-
-
-function update(xw, y)
-    
-
-    
-
-end    
-
-
-function buildMahalanobisDictionary(subx::Matrix, suby::Matrix; sim_size::Int64=Int(4e3))
-    distx, disty = map(space -> Mahalanobis(space * space'), [subx, suby])
-
-    mahx = pairwise(distx, subx) |> cu
-    mahy = pairwise(disty, suby) |> cu
-
-    sort!(mahx, dims=1)
-    sort!(mahy, dims=1)
-
-    mahx, mahy = map(normalizeEmbedding, [mahx, mahy])
-
-    sim = mahx' * mahy
-
-    src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
-    trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-
-    return src_idx, trg_idx, objective
-end
-
-
 function mapOrthogonal(X::T, Y::T; λ::Float32=Float32(1)) where {T}
     F = CUDA.CUBLAS.svd(X * Y')
     W = permutedims(F.U * F.Vt * cuinv((X * X') + λ .* CuMatrix{Float32}(I, 300, 300)))
@@ -282,36 +289,94 @@ function mapOrthogonal(X::T, Y::T; λ::Float32=Float32(1)) where {T}
 end
 
 
-function train2(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, trg_size::Int64, keep_prob::Float64,
-                objective::T2; stop::Bool=false, lambda::Float32=Float32(.1)) where {T, T1, T2}
+function main(X, Y, src_idx, trg_idx, validation; src_size=Int(20e3), trg_size=Int(20e3), Wt::CuMatrix=cu(zeros(size(X))))
+    @info "Starting Training"
+    stochastic_interval   = 50
+    stochastic_multiplier = 2.0
+    stochastic_initial    = .1
+    threshold = Float64(1e-6) # original threshold = Float64(1e-6)
+    best_objective = objective = -100. # floating
+    it = 1
+    last_improvement = 0
+    keep_prob = stochastic_initial
+    stop = !true
+    W = CUDA.zeros(size(X))
+    λ = Float32(1)
+    time = true
+    while true
+        printstyled("Iteration : # ", it, "\n", color=:green)
+        # increase the keep probability if we have not improved in stochastic_interval iterations
+        if it - last_improvement > stochastic_interval
+            if keep_prob >= 1.0
+                stop = true
+            end
+            keep_prob = min(1., stochastic_multiplier * keep_prob)
+            println("Drop probability : ", 100 - 100 * keep_prob)
+            last_improvement = it
+        end
 
+        if stop
+            break
+        end
+
+        # src_idx, trg_idx, objective, W = XLEs.train2(X[:, 1:src_size], Y[:, 1:trg_size], Wt_1, src_idx, trg_idx, src_size, trg_size, keep_prob, objective; stop=stop, time=true, lambda=λ)
+
+
+        # updating training dictionary
+        src_idx, trg_idx, objective, W = train(X[:, 1:src_size], Y[:, 1:trg_size], Wt, src_idx, trg_idx, src_size, trg_size, keep_prob, objective; stop=stop, time=time, lambda=λ)
+
+        # time = false
+        
+        if objective - best_objective >= threshold
+            last_improvement = it
+            best_objective = objective
+        end
+
+        # validating
+        if mod(it, 10) == 0
+            accuracy, similarity = validate((W * X), Y, validation)
+            @info "Accuracy on validation set :", accuracy
+            @info "Validation Similarity = " , similarity
+        end
+
+        it += 1
+
+    end
+    return W, src_idx, trg_idx
+end
+
+
+
+function train2(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, trg_size::Int64, keep_prob::Float64,
+               objective::T2; stop::Bool=false, time::Bool=false, lambda::Float32=Float32(.1),
+               updateSV::SplitInfo=SplitInfo(false, 10, 20, 40)) where {T, T1, T2}
+
+       
     src_idx_forward  = cu(collect(1:src_size));
     trg_idx_backward = collect(1:trg_size);
 
     W, _ = mapOrthogonal(X[:, src_idx], Y[:, trg_idx], λ=lambda)
 
+    if time
+        W += Wt_1
+    end
+
     if stop
         return src_idx, trg_idx, objective, W  # returning the results
     end
 
-    XW = W * X;
+    XW = W * X |> Matrix;
 
-    src_idx, trg_idx, objective = buildMahalanobisDictionary(XW |> Array, Y |> Array, sim_size=src_size)
-    #trg_idx_forward,  best_sim_forward  = update(Y, XW, keep_prob)
-    #src_idx_backward, best_sim_backward = update(XW, Y, keep_prob)
+    trg_idx_forward,  best_sim_forward  = XLEs.updateMahalanobis(Y |> Matrix, XW, keep_prob)
+    src_idx_backward, best_sim_backward = XLEs.updateMahalanobis(XW, Y |> Matrix, keep_prob)
 
-    #src_idx = vcat(src_idx_forward, src_idx_backward)
-    #trg_idx = vcat(trg_idx_forward, trg_idx_backward)
+    src_idx = vcat(src_idx_forward, src_idx_backward)
+    trg_idx = vcat(trg_idx_forward, trg_idx_backward)
 
-    #objective = (mean(best_sim_forward) + mean(best_sim_backward)) / 2
+    objective = (mean(best_sim_forward) + mean(best_sim_backward)) / 2
+
     return src_idx, trg_idx, objective, W
 end
-
-
-
-
-
-
 
 function train(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, trg_size::Int64, keep_prob::Float64,
                objective::T2; stop::Bool=false, time::Bool=false, lambda::Float32=Float32(.1), updateSV::SplitInfo=SplitInfo(false, 10, 20, 40)) where {T, T1, T2}
@@ -323,14 +388,11 @@ function train(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, t
     W, _ = mapOrthogonal(X[:, src_idx], Y[:, trg_idx], λ=lambda)
     # W = mapViaPseudoInverse(X[:, src_idx], Y[:, trg_idx], λ=lambda)
 
-    if time
-        W += Wt_1
-    end
+
     if stop
         return src_idx, trg_idx, objective, W  # returning the results
     end
 
-    XW = W * X
 
 
     if updateSV.change
@@ -338,6 +400,9 @@ function train(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, t
         XW = replaceSingulars(XW[:,1:src_size], info=updateSV)
     end
 
+
+    XW = W * X
+    
     trg_idx_forward,  best_sim_forward  = update(Y, XW, keep_prob)
     src_idx_backward, best_sim_backward = update(XW, Y, keep_prob)
 

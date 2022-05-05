@@ -64,3 +64,49 @@ function corrAndCov(E::T, ssize::Int64=Int(4e3)) where {T}
     Corr[LinearAlgebra.diagind(Corr) ] .= 1.0
     C, Corr
 end
+
+function doubleCenter!(S::Matrix)
+    d, w = size(S)
+    if d != w
+        @error "Input matrix is not square! Fatal Error!"
+    end
+    μ = fill(mean(S), w)
+    S .= S .- mean(S, dims=1) .= mean(S, dims=2) .+ μ
+    return S
+end
+
+getTopK(voc::Array{String}, DistM::Matrix, idx::Int64; k::Int64=10) = voc[DistM[:, idx][end-k:end]]
+
+
+ 
+
+function getDistanceIDX(S::Matrix)
+    d, w = size(S)
+    if d != w
+        @error "Input matrix is not square! Fatal Error !"
+    end 
+    D = collect(sortperm(S[:, i]) for i in axes(S, 1))
+    return reduce(hcat, D)
+end
+
+
+"""
+    randomized Singular Value Decomposition
+    X: Matrix to decompose
+    r: target rank
+    p: oversampling parameter
+    q: power iterations
+    returns Fr object.
+    Target rank (r) should be << than size(X, 1) - considering that the matrix is column major.
+
+"""
+function rSVD(X::Matrix, r::Int64; p::Int64=5, q::Int64=1)
+    
+    d, n = size(X)
+    P = rand(Float32, r + p, d)
+    Z = P * X
+    # apply power iterations
+    for k in 1:q
+        
+    end
+end

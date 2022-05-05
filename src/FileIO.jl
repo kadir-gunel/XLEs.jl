@@ -15,6 +15,7 @@ using Parameters
     trgLang::String="es"
     validation::Bool=true
     reversed::Bool=false
+    binary::Bool=true
 end
 
 
@@ -24,13 +25,20 @@ function readData(data::EmbeddingData)
     trgLang  = data.trgLang
     validation = data.validation
     reversed = data.reversed
+    binary = data.binary
     root, folders, files = first(walkdir(datapath))
     embeddings, dictionaries = map(x -> folders[findfirst(isequal(x), folders)], ["embeddings", "dictionaries"])
-    
+
     srcfile, trgfile = map(f -> reduce(*, [root, embeddings, "/", f]), [srcLang, trgLang])
-    SRC = srcfile |> readBinaryEmbeddings;
-    TRG = trgfile |> readBinaryEmbeddings;
-    
+    SRC, TRG = nothing, nothing
+    if binary
+        SRC = srcfile |> readBinaryEmbeddings;
+        TRG = trgfile |> readBinaryEmbeddings;
+    else
+        SRC = srcfile |> readEmbeddings;
+        TRG = trgfile |> readEmbeddings;
+    end
+
     if validation
         VAL = reduce(*, [root, dictionaries, "/", srcLang, "-", trgLang, ".test.txt"])
         if reversed
@@ -42,7 +50,13 @@ function readData(data::EmbeddingData)
 end
 
 
-
+function convertTxt2Bin(file::String)
+    @info "Reading .txt file"
+    V, E = file |> readEmbeddings
+    @info "Writing to .bin file"
+    writeBinaryEmbeddings(file, E, V)
+    # writeBinaryEmbeddings(file::String, WE::Matrix, V::Array{String})
+end
 
 
 """ This method reads the .bin file and converts it to .txt format for python usage"""
@@ -50,7 +64,7 @@ function convertBin2Txt(file::String)
     @info "Reading .bin file"
     V, E = file |> readBinaryEmbeddings
     @info "Writing to .txt file"
-    writeEmbeds(file, V, E)
+    writeBinaryEmbeddings(file, V, E)
 end
 
 function writeInitialDictionary(file::String, Vs::Array{String}, Vt::Array{String}; type::Symbol=:JS)
@@ -61,7 +75,6 @@ function writeInitialDictionary(file::String, Vs::Array{String}, Vt::Array{Strin
     end
     close(s)
 end
-
 
 
 function writeDictionary(file::String, dict::Array{String})
@@ -77,14 +90,16 @@ end
 
 """
 function writeBinaryEmbeddings(file::String, WE::Matrix, V::Array{String})
+    d, w = size(WE);
     @info "Creating .bin for Word Embeddings"
-    if size(WE, 1) > size(WE, 2)
+    if d > w
         @warn "Permuting the Embedding matrix to raw major form"
         WE = Matrix(permutedims(WE))
     end
+
     s = open(file * "_WE.bin", "w+")
-    write(s, size(WE, 1))
-    write(s, size(WE, 2))
+    write(s, d)
+    write(s, w)
     write(s, WE)
     close(s)
 
