@@ -68,7 +68,7 @@ function whitening(M::CuArray)
 end
 
 simSize(X::T, Y::T; unsupervised_vocab::Int64=4000) where {T}  =
-                unsupervised_vocab <= 0 ? min(size(X, 2) , size(Y, 2)) : min(size(X, 2) , size(Y, 2), unsupervised_vocab)
+    unsupervised_vocab <= 0 ? min(size(X, 2) , size(Y, 2)) : min(size(X, 2) , size(Y, 2), unsupervised_vocab)
 
 function sqrt_eigen(subE)
     F = svd(subE)
@@ -104,19 +104,19 @@ function buildSeedDictionary0(X::T, Y::T; sim_size::Int64=4000) where {T}
     xsim, ysim = map(normalizeEmbedding, [xsim, ysim])
     sim = xsim' * ysim; # actually this is still the cosine similarity from X -> Z.
     # csls_neighborhood = 10
-
+    
     sim = csls(sim)
-
+    
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-
+    
     return src_idx, trg_idx
 end
 
 
 
 function buildSeedDictionary(X::T, Y::T; sim_size::Int64=4000) where {T}
-   # sims = map(cudaCorrelationMatrix, [X, Y])
+    # sims = map(cudaCorrelationMatrix, [X, Y])
     xsim = cudaCorrelationMatrix(X, sim_size=sim_size)
     ysim = cudaCorrelationMatrix(Y, sim_size=sim_size)
     sort!(ysim, dims=1)
@@ -125,12 +125,12 @@ function buildSeedDictionary(X::T, Y::T; sim_size::Int64=4000) where {T}
     xsim, ysim = map(normalizeEmbedding, [xsim, ysim])
     sim = xsim' * ysim; # actually this is still the cosine similarity from X -> Z.
     # csls_neighborhood = 10
-
+    
     sim = csls(sim)
-
+    
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-
+    
     return src_idx, trg_idx
 end
 
@@ -151,16 +151,16 @@ dist2sim(M::Matrix) = 1 ./ exp.(M)
 
 
 function buildDictionary(metric::Symbol=:CosineDist)
-
+    
     # 1. find the cosine distances between each sub-space
     cosx, cosy = map(space -> pairwise(eval(metric)(), space), [subx, suby]);
     map(space -> sort!(space, dims=1), [cosx, cosy]);
     cosx, cosy = map(normalizeEmbedding, [cosx, cosy]);
     sim = csls(cosx' * cosy);
-
+    
     src_idx = vec(vcat(collect(1:sim_size), permutedims(getindex.(argmax(sim, dims=1), 1))|> Array))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
-
+    
     return src_idx, trg_idx
 end
 
@@ -271,13 +271,13 @@ end
 function update(A, B, keep_prob::Float64)
     sim = permutedims(A) * B
     revsim  = permutedims(sim)
-
+    
     knnsim  = topk_mean(sim, 10, inplace=true)
     bestsim = CUDA.CUBLAS.maximum(revsim, dims=2)
-
+    
     revsim  = revsim - (CUDA.ones(Float32, size(sim)) .* (transpose(knnsim / 2)))
     idx = getindex.(argmax(CUDA.CUDNN.cudnnDropoutForward(revsim, dropout=1 - keep_prob), dims=2), 2)
-
+    
     return vec(idx), vec(bestsim)
 end
 
@@ -286,6 +286,27 @@ function mapOrthogonal(X::T, Y::T; λ::Float32=Float32(1)) where {T}
     F = CUDA.CUBLAS.svd(X * Y')
     W = permutedims(F.U * F.Vt * cuinv((X * X') + λ .* CuMatrix{Float32}(I, 300, 300)))
     return W, F.S
+end
+
+
+function mapRandom(cosŶ, cosY)
+    F = rsvd(cosŶ * cosY, 30, 4)
+    W = F.U * F.Vt
+    W * cosa * W'
+end
+
+pairwiseCosine(M) = M' * M;
+
+function updateRankings(Ŷ, Y)
+    cosŶ = pairwiseCosine(Ŷ) |> Array # the similarities to be rotated
+    cosY = pairwiseCosine(Y) |> Array # cosine Ground Truths (fixed)
+    cosŶ = mapRandom(cosŶ, cosY) |> cu # rotated cos Ŷ
+    revCosŶ = permutedims(cosŶ)
+    knnsim  = topk_mean(cosŶ, 10, rev=true) # get mean of top k for each 
+    bestsim = CUDA.CUBLAS.maximum(revCosŶ, dims=2) # for objective function
+    revCosŶ = revCosŶ - (CUDA.ones(Float32, size(cosŶ)) .*  (transpose(knnsim / 2)))
+    idx = getindex.(argmax(revCosŶ, dims=2), 2)
+    return idx, bestsim
 end
 
 
@@ -374,9 +395,11 @@ function train2(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, 
     trg_idx = vcat(trg_idx_forward, trg_idx_backward)
 
     objective = (mean(best_sim_forward) + mean(best_sim_backward)) / 2
-
+    
     return src_idx, trg_idx, objective, W
 end
+
+
 
 function train(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, trg_size::Int64, keep_prob::Float64,
                objective::T2; stop::Bool=false, time::Bool=false, lambda::Float32=Float32(.1), updateSV::SplitInfo=SplitInfo(false, 10, 20, 40)) where {T, T1, T2}
@@ -401,20 +424,21 @@ function train(X::T, Y::T, Wt_1::T, src_idx::T1, trg_idx::T1, src_size::Int64, t
     end
 
 
-    XW = W * X
+    WX = W * X
     
-    trg_idx_forward,  best_sim_forward  = update(Y, XW, keep_prob)
-    src_idx_backward, best_sim_backward = update(XW, Y, keep_prob)
+    trg_idx_forward,  best_sim_forward  = update(Y, WX, keep_prob)
+    src_idx_backward, best_sim_backward = update(WX, Y, keep_prob)
 
     src_idx = vcat(src_idx_forward, src_idx_backward)
     trg_idx = vcat(trg_idx_forward, trg_idx_backward)
-
+    # cosine rotation starts here ! 
     objective = (mean(best_sim_forward) + mean(best_sim_backward)) / 2
     return src_idx, trg_idx, objective, W
 end
 
 
 
+    
 word2idx(voc::Array{String,1}) = Dict(term => i for (i, term) in enumerate(voc))
 
 function validate(XW::T, YW::T, validation::Dict) where {T}

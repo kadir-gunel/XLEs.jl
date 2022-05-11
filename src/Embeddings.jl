@@ -80,13 +80,16 @@ getTopK(voc::Array{String}, DistM::Matrix, idx::Int64; k::Int64=10) = voc[DistM[
 
  
 
-function getDistanceIDX(S::Matrix)
+function getDistanceIDX(S::Matrix; k::Int64=size(S, 1))
     d, w = size(S)
     if d != w
         @error "Input matrix is not square! Fatal Error !"
-    end 
-    D = collect(sortperm(S[:, i]) for i in axes(S, 1))
-    return reduce(hcat, D)
+    end
+    D = Matrix{Int64}(undef, k, w)
+    @threads for i in axes(S, 1)
+        D[:, i] = sortperm(S[:, i])[end-k+1:end]
+    end
+    return D
 end
 
 
