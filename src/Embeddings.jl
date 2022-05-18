@@ -37,6 +37,28 @@ function sequenceCosine(X_sub::Matrix, X::Matrix)
             j in axes(X, 1)]
 end
 
+#=
+function parallelMahalanobis(X_sub::Matrix, X::Matrix)
+    
+    results = similar(X, size(X_sub, 2), size(X, 2))
+    @threads for j in axes(X, 2)
+        for i in axes(X_sub, 2)
+            results[i, j] = @views mahalanobis
+end
+
+=#
+
+function parallelCosine(X_sub::Matrix, X::Matrix)
+    results = similar(X, size(X_sub, 2), size(X, 2))
+    @threads for j in axes(X, 2)
+        for i in axes(X_sub, 2)
+            results[i, j] = @views cosine_dist(X_sub[:, i], X[:, j])
+        end
+    end
+    results
+end
+
+
 function parallelCosine(X_sub::Matrix, X::Matrix)
     results = similar(X, size(X_sub, 2), size(X, 2))
     @threads for j in axes(X, 2)
@@ -48,10 +70,10 @@ function parallelCosine(X_sub::Matrix, X::Matrix)
 end
 
 function parallelIdx(R::Matrix; k::Int64=5)
-    top_idx = Matrix{Int64}(undef, k, size(R, 1))
+    top_idx = Matrix{Int64}(undef, size(R, 1), k)
     @threads for i in axes(R, 1)
-            top_idx[:, i] = sortperm(R[:, i])[1:k]
-        end
+        top_idx[i, :] = sortperm(R[i, :])[1:k]
+    end
     return top_idx
 end
 
