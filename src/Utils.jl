@@ -144,7 +144,7 @@ end
 
 function train(X::CuMatrix, Y::CuMatrix, src_idx::L, trg_idx::L,
                src_size::Int64, trg_size::Int64, keep_prob::Float64,
-               objective::T2; stop::Bool=false) where {L}
+               objective::T; stop::Bool=false) where {L, T}
 
     W = mapOrthogonal(X[:, src_idx], Y[:, trg_idx])
 
