@@ -1,8 +1,6 @@
-using Statistics
-using Base.Threads
-using Base.Iterators
-import Base.stat
-using Base.GC
+using .GC
+using .Threads
+using .Iterators
 using Mmap
 using Test
 
@@ -10,7 +8,7 @@ using Parameters
 
 
 @with_kw struct EmbeddingData
-    datapath::String="/home/PhD/github/XLEs/data/exp_raw/"
+    datapath::String="/path/to/embeddings"
     srcLang::String="en"
     trgLang::String="es"
     validation::Bool=true
@@ -54,8 +52,7 @@ function convertTxt2Bin(file::String)
     @info "Reading .txt file"
     V, E = file |> readEmbeddings
     @info "Writing to .bin file"
-    writeBinaryEmbeddings(file, E, V)
-    # writeBinaryEmbeddings(file::String, WE::Matrix, V::Array{String})
+    writeBinaryEmbeddings(file::String, WE::Matrix, V::Array{String})
 end
 
 
@@ -64,7 +61,7 @@ function convertBin2Txt(file::String)
     @info "Reading .bin file"
     V, E = file |> readBinaryEmbeddings
     @info "Writing to .txt file"
-    writeBinaryEmbeddings(file, V, E)
+    writeBinaryEmbeddings(file::String, V::Array{String}, E::Matrix)
 end
 
 function writeInitialDictionary(file::String, Vs::Array{String}, Vt::Array{String}; type::Symbol=:JS)
@@ -233,13 +230,4 @@ function readValidation(valpath::String, src_w2i::Dict, trg_w2i::Dict)::Dict
     @info ("# of words inside validation set : ", length(validation))
     @info ("# of out of vocabulary words : ", length(oov))
     return validation
-end
-
-
-function getConditionScores(file::String)
-    lines = readlines(file)
-    lines = split.(lines[12:2:end])
-    lines = reduce(hcat, lines)
-    scores= parse.(Float64, lines[3, :])
-    return scores
 end

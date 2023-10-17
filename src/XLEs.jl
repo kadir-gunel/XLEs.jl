@@ -1,14 +1,14 @@
 module XLEs
 
-    export normalizeEmbedding, unit, unitByVar, center, vecLength, p_norm, parallelCosine,
-    sequentialCosine, parallelIdx
+    export normalizeEmbedding, unit, unitByVar, center, vecLength,
+    p_norm, MMD, gram_rbf, gram_rbf2, center_gram, corrAndCov,
+    doubleCenter!
     export readEmbeddings, readValidation, readBinaryEmbeddings,
-    writeBinaryEmbeddings, convertBin2Txt, writeEmbeds, EmbeddingData, readData
-    export train, trainWithNN, validate, advancedMapping, word2idx,
-    buildSeedDictionary, buildNNSeedDictionary,cutVocabulary, validateCSLS,
-    replaceSingulars, printResults, validateModel, getIDX_NN, getIDX_CSLS,
-    Postprocessing, SplitInfo, trainWithLowestCondition, findLowestConditions,
-    buildSubSpace, mapOrthogonal, softSeedDictionary, buildSeedDictionary2, buildMahalanobisDictionary
+    writeBinaryEmbeddings, convertBin2Txt, writeEmbeds, EmbeddingData,
+    readData, convertTxt2Bin
+    export train, main, validate, word2idx, buildSeedDictionary,
+    cutVocabulary, validateCSLS, validateModel, getIDX_NN,
+    getIDX_CSLS, mapOrthogonal, sqrt_eigen
 
 
     include("./Embeddings.jl")

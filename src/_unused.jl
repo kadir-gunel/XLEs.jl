@@ -1,3 +1,94 @@
+"""
+Asked for how to optimize the search on Discourse julia and taken from
+the best working solution; you can find
+@https://discourse.julialang.org/t/y-a-t-q-yet-another-threads-question/71541/9
+"""
+function sequenceCosine(X_sub::Matrix, X::Matrix)
+    [@views cosine_dist(X_sub[i, :], X[j, :])
+        for i in axes(X_sub, 1),
+            j in axes(X, 1)]
+end
+
+#=
+function parallelMahalanobis(X_sub::Matrix, X::Matrix)
+
+    results = similar(X, size(X_sub, 2), size(X, 2))
+    @threads for j in axes(X, 2)
+        for i in axes(X_sub, 2)
+            results[i, j] = @views mahalanobis
+end
+
+=#
+
+function parallelCosine(X_sub::Matrix, X::Matrix)
+    results = similar(X, size(X_sub, 2), size(X, 2))
+    @threads for j in axes(X, 2)
+        for i in axes(X_sub, 2)
+            results[i, j] = @views cosine_dist(X_sub[:, i], X[:, j])
+        end
+    end
+    results
+end
+
+
+function parallelCosine(X_sub::Matrix, X::Matrix)
+    results = similar(X, size(X_sub, 2), size(X, 2))
+    @threads for j in axes(X, 2)
+        for i in axes(X_sub, 2)
+            results[i, j] = @views cosine_dist(X_sub[:, i], X[:, j])
+        end
+    end
+    results
+end
+
+function parallelIdx(R::Matrix; k::Int64=5)
+    top_idx = Matrix{Int64}(undef, size(R, 1), k)
+    @threads for i in axes(R, 1)
+        top_idx[i, :] = sortperm(R[i, :])[1:k]
+    end
+    return top_idx
+end
+
+getTopK(voc::Array{String}, DistM::Matrix, idx::Int64; k::Int64=10) = voc[DistM[:, idx][end-k:end]]
+
+
+
+
+function getDistanceIDX(S::Matrix; k::Int64=size(S, 1))
+    d, w = size(S)
+    if d != w
+        @error "Input matrix is not square! Fatal Error !"
+    end
+    D = Matrix{Int64}(undef, k, w)
+    @threads for i in axes(S, 1)
+        D[:, i] = sortperm(S[:, i])[end-k+1:end]
+    end
+    return D
+end
+
+
+"""
+    randomized Singular Value Decomposition
+    X: Matrix to decompose
+    r: target rank
+    p: oversampling parameter
+    q: power iterations
+    returns Fr object.
+    Target rank (r) should be << than size(X, 1) - considering that the matrix is column major.
+
+"""
+function rSVD(X::Matrix, r::Int64; p::Int64=5, q::Int64=1)
+
+    d, n = size(X)
+    P = rand(Float32, r + p, d)
+    Z = P * X
+    # apply power iterations
+    for k in 1:q
+
+    end
+end
+
+
 function calcobjective(sim)
     bestfward = mean(CUDA.CUBLAS.maximum(sim, dims=2))
     bestbward = mean(CUDA.CUBLAS.maximum(permutedims(sim), dims=2))
@@ -187,4 +278,38 @@ function buildDictionary(subx, suby; sim_size::Int64=Int(4e3))
     trg_idx = vec(vcat((getindex.(argmax(sim, dims=2),2))|> Array, collect(1:sim_size)))
 
     src_idx, trg_idx
+end
+
+function getConditionScores(file::String)
+    lines = readlines(file)
+    lines = split.(lines[12:2:end])
+    lines = reduce(hcat, lines)
+    scores= parse.(Float64, lines[3, :])
+    return scores
+end
+
+
+@with_kw struct SplitInfo
+    change::Bool=false
+    freqs::Int64 = (15e3)
+    ordinary::Int64 = (25e3)
+    rares::Int64 = (160e3)
+end
+
+@with_kw struct Postprocessing{T<:AbstractFloat, T1<:Integer, F<:Function}
+    X::Matrix{T}
+    Y::Matrix{T}
+    src_idx::Array{T1}
+    trg_idx::Array{T1}
+    func::F
+    info::SplitInfo
+    validationSet::Dict
+    src_voc::Array
+    trg_voc::Array
+end
+
+function csls(sim; k::Int64=10)
+    knn_sim_fwd = topk_mean(sim, k);
+    knn_sim_bwd = topk_mean(permutedims(sim), k);
+    sim -= CUDA.ones(eltype(sim), size(sim)) .* (knn_sim_fwd / 2) + CUDA.ones(eltype(sim), size(sim)) .* ((knn_sim_bwd / 2));
 end

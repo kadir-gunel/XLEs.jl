@@ -1,7 +1,5 @@
-using Base.Threads
-using Distances
-using Random
-
+using LinearAlgebra
+using Statistics: mean
 
 function unit(matrix::T) where {T}
     norms = p_norm(matrix)
@@ -27,55 +25,110 @@ vecLength(X::T) where {T} = sqrt.(diag(X' * X))
 normalizeEmbedding(E::T) where {T} = E |> unit |> center |> unit
 
 
-"""
-Asked for how to optimize the search on Discourse julia and taken from the best working solution;
-    you can find @ https://discourse.julialang.org/t/y-a-t-q-yet-another-threads-question/71541/9
-"""
-function sequenceCosine(X_sub::Matrix, X::Matrix)
-    [@views cosine_dist(X_sub[i, :], X[j, :])
-        for i in axes(X_sub, 1),
-            j in axes(X, 1)]
-end
 
-#=
-function parallelMahalanobis(X_sub::Matrix, X::Matrix)
-    
-    results = similar(X, size(X_sub, 2), size(X, 2))
-    @threads for j in axes(X, 2)
-        for i in axes(X_sub, 2)
-            results[i, j] = @views mahalanobis
-end
 
-=#
+function MMD(x::T, y::T; kernel::String="multiscale") where T
+    atype = typeof(x)
+    xx = x' * x
+    yy = y' * y
+    zz = x' * y
 
-function parallelCosine(X_sub::Matrix, X::Matrix)
-    results = similar(X, size(X_sub, 2), size(X, 2))
-    @threads for j in axes(X, 2)
-        for i in axes(X_sub, 2)
-            results[i, j] = @views cosine_dist(X_sub[:, i], X[:, j])
+    rx, ry = map(x -> repeat(diag(x), outer=(1,size(x, 2))), [xx, yy])
+
+    dxx = rx + rx' - 2xx
+    dyy = ry + ry' - 2yy
+    dxy = rx + ry' - 2zz
+
+    if isequal(string(atype), "CuArray{Float32, 2, CUDA.Mem.DeviceBuffer}")
+        XX, YY, XY = map(xx -> cu(zeros(size(xx))), [xx, xx, xx])
+    else
+        XX, YY, XY = map(xx -> zeros(size(xx)), [xx, xx, xx])
+    end
+
+    if isequal(kernel, "multiscale")
+        bandwidth_range = [0.2, 0.5, 0.9, 1.3]
+        for b in bandwidth_range
+            XX += b^2 * (b^2 .+ dxx).^(-1)
+            YY += b^2 * (b^2 .+ dyy).^(-1)
+            XY += b^2 * (b^2 .+ dxy).^(-1)
         end
     end
-    results
-end
 
-
-function parallelCosine(X_sub::Matrix, X::Matrix)
-    results = similar(X, size(X_sub, 2), size(X, 2))
-    @threads for j in axes(X, 2)
-        for i in axes(X_sub, 2)
-            results[i, j] = @views cosine_dist(X_sub[:, i], X[:, j])
+    if isequal(kernel, "rbf")
+        bandwidth_range = [10, 15, 20, 50]
+        for b in bandwidth_range
+            XX += exp.(-.5 * dxx / b)
+            YY += exp.(-.5 * dyy / b)
+            XY += exp.(-.5 * dxy / b)
         end
     end
-    results
+
+    return mean(XX + YY - 2 .* XY)
 end
 
-function parallelIdx(R::Matrix; k::Int64=5)
-    top_idx = Matrix{Int64}(undef, size(R, 1), k)
-    @threads for i in axes(R, 1)
-        top_idx[i, :] = sortperm(R[i, :])[1:k]
-    end
-    return top_idx
+
+function freschet_distance(X::T, Y::T) where {T}
+    μ1 = mean(X, dims=2)
+    μ2 = mean(Y, dims=2)
+
+    μ = sum((μ1 - μ2).^2)
+
+    σ1 = cov(X, dims=2)
+    σ2 = cov(Y, dims=2)
+
+    σ_mean = sqrt.(σ1 .* σ2)
+
+    σ_mean = isequal(σ_mean |> typeof, ComplexF32) ? real(σ_mean) : σ_mean
+
+    return μ + tr(σ1 + σ2 - 2σ_mean)
 end
+
+
+
+function gram_rbf2(from::AbstractArray, to::AbstractArray; threshold=1.)
+    F = svd(from)
+    T = svd(to)
+    newS = log.(F.S .+ T.S)
+    dot_prod = F.V .* newS' * T.Vt
+    sq_norms = diag(dot_prod)
+    sq_dists =  -2 * dot_prod .+ sq_norms .+ permutedims(sq_norms)
+    sq_median_distance = median(sq_dists)
+    return exp.(-sq_dists / (2 * threshold^2 * sq_median_distance))
+end
+
+
+
+function center_gram(G::AbstractArray; unbiased=false)
+    if !issymmetric(G)
+        @error "Gram Matrix have to be symmetric"
+    G = deepcopy(G)
+    end
+    if unbiased
+        n, n = G |> size
+        G[diagind(G)] .= 0.
+        μs = sum(G, dims=2) / (n-1)
+        μs = μs .- (sum(μs) / (2 * (n -1)))
+        G = G .- μs .- permutedims(μs)
+        G[diagind(G)] .= 0
+    else
+        μs = mean(G, dims=2)
+        μs = μs .- mean(μs) / 2
+        G = G .- μs .- permutedims(μs)
+    end
+    return G
+end
+
+
+function gram_rbf(X::AbstractArray; threshold=1.)
+    F = svd(X)
+    dot_prod = (F.V .* F.S') * F.Vt;
+    sq_norms = diag(dot_prod)
+    sq_dists =  -2 * dot_prod .+ sq_norms .+ permutedims(sq_norms)
+    sq_median_distance = median(sq_dists)
+    return exp.(-sq_dists / (2 * threshold^2 * sq_median_distance))
+end
+
+
 
 
 function corrAndCov(E::T, ssize::Int64=Int(4e3)) where {T}
@@ -97,41 +150,3 @@ function doubleCenter!(S::Matrix)
     return S
 end
 
-getTopK(voc::Array{String}, DistM::Matrix, idx::Int64; k::Int64=10) = voc[DistM[:, idx][end-k:end]]
-
-
- 
-
-function getDistanceIDX(S::Matrix; k::Int64=size(S, 1))
-    d, w = size(S)
-    if d != w
-        @error "Input matrix is not square! Fatal Error !"
-    end
-    D = Matrix{Int64}(undef, k, w)
-    @threads for i in axes(S, 1)
-        D[:, i] = sortperm(S[:, i])[end-k+1:end]
-    end
-    return D
-end
-
-
-"""
-    randomized Singular Value Decomposition
-    X: Matrix to decompose
-    r: target rank
-    p: oversampling parameter
-    q: power iterations
-    returns Fr object.
-    Target rank (r) should be << than size(X, 1) - considering that the matrix is column major.
-
-"""
-function rSVD(X::Matrix, r::Int64; p::Int64=5, q::Int64=1)
-    
-    d, n = size(X)
-    P = rand(Float32, r + p, d)
-    Z = P * X
-    # apply power iterations
-    for k in 1:q
-        
-    end
-end
