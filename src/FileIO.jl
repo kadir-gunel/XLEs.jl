@@ -226,8 +226,8 @@ function readValidation(valpath::String, src_w2i::Dict, trg_w2i::Dict)::Dict
     end
     setdiff!(oov, vocab)
     validation_coverage = length(validation) / (length(validation) + length(oov))
-    @info ("Validation Coverage : ", validation_coverage)
-    @info ("# of words inside validation set : ", length(validation))
-    @info ("# of out of vocabulary words : ", length(oov))
+    @info "Validation Coverage:  $validation_coverage "
+    @info "# of words inside validation set:  $(length(validation))"
+    @info "# of out of vocabulary words: , $(length(oov))"
     return validation
 end

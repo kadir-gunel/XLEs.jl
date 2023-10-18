@@ -7,7 +7,7 @@ using Parameters
 using Distances
 
 using CUDA
-import CUDA.CUBLAS: gemm!, svd, axpby!, ger!, max, maximum
+import CUDA.CUBLAS: gemm!, svd, axpy!, axpby!, ger!, max, maximum
 import cuDNN: cudnnDropoutForward
 
 isequal(CUDA.functional(), true) ? CUDA.allowscalar(true) : @error "No CUDA Functionality"
@@ -49,9 +49,6 @@ function whitening(M::CuMatrix{Float32})
     F = svd(M)
     return F.V * cu(diagm(1 ./ F.S)) * (F.Vt)
 end
-
-simSize(X::T, Y::T; unsupervised_vocab::Int64=4000) where {T}  =
-    unsupervised_vocab <= 0 ? min(size(X, 2) , size(Y, 2)) : min(size(X, 2) , size(Y, 2), unsupervised_vocab)
 
 function sqrt_eigen(subE)
     F = svd(subE)
@@ -137,7 +134,7 @@ function mapOrthogonal(X::CuMatrix, Y::CuMatrix)
 
     F = svd(XY)
 
-    gemm!('N', 'T', cu(Float32(1)), F.U, F.V, cu(Float32(0)), W) # F.U * F.Vt
+    gemm!('N', 'N', cu(Float32(1)), F.U, F.Vt, cu(Float32(0)), W)
 
     return permutedims(W)
 end
@@ -177,7 +174,8 @@ function main(X, Y, src_idx, trg_idx, validation; src_size=Int(20e3), trg_size=I
     last_improvement = 0
     keep_prob = stochastic_initial
     stop = !true
-
+    d, n = X |> size
+    W = cu(zeros(d, d))
     while true
         printstyled("Iteration : # ", it, "\n", color=:green)
         # increase the keep probability if we have not improved in stochastic_interval iterations
