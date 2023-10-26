@@ -194,7 +194,7 @@ function readEmbeds(file; threshold=0, vocabulary=Nothing, dtype=Float32)
 end
 
 """ this method is used for interoperability with the python vecmap"""
-function writeEmbeds(file::String, voc::Array{String}, embed::M) where {M}
+function writeEmbeds(file::String, voc::Array{String}, embed::M; vinfo::Bool=false) where {M}
     if size(embed, 1) < size(embed, 2)
         @warn "Need to convert the embedding matrix format from column to raw major"
         embed = Matrix(permutedims(embed))
@@ -202,7 +202,9 @@ function writeEmbeds(file::String, voc::Array{String}, embed::M) where {M}
     @info "Writing Embedding file as .txt - will consume too much space."
     s = open(file * ".txt", "w+")
     lines = length(voc)
-    write(s, string(lines) * " " * string(size(embed, 2)) * "\n")
+    if vinfo
+        write(s, string(lines) * " " * string(size(embed, 2)) * "\n")
+    end
     for i in 1:lines
         write(s, voc[i] * " " * join(string.(embed[i, :]), " ") * "\n")
     end
