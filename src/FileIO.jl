@@ -200,7 +200,7 @@ function writeEmbeds(file::String, voc::Array{String}, embed::M; vinfo::Bool=fal
         embed = Matrix(permutedims(embed))
     end
     @info "Writing Embedding file as .txt - will consume too much space."
-    s = open(file * ".txt", "w+")
+    s = open(file * ".vec", "w+")
     lines = length(voc)
     if vinfo
         write(s, string(lines) * " " * string(size(embed, 2)) * "\n")
