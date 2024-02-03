@@ -8,12 +8,8 @@ Please note that these algorithms do not align different representations trained
 I dedicated a whole chapter in my PhD thesis to this phenomenon of cross-model alignment, and it appears that there is no one-size-fits-all solution; there's no silver bullet that can address all scenarios.
 
 
-
-
-### Note to myself
-1. share a main script.
-2. share also optimal transport approach.
-
+## Main scripts
+Please go to [XLEScripts](https://github.com/kadir-gunel/XLEscripts), there are various scripts for word alignment. Additionally, apart from the orthogonal approach there is one interesting approach for alignment which is based on optimal transport (BLOT.jl). You can find more information on the XLEScript repo. 
 
 
 ## Why reimplementation ? 
