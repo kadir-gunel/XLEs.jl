@@ -1,11 +1,12 @@
 # XLEs.jl
 
 
-Algorithms for bilingual lingual embedding alignments. This is the direct re-implementation of [vecmap](https://github.com/artetxem/vecmap) which was written in python. Right now, the unsupervised bilingual alignment is implemented. The supervsied version is pretty simple once you have a training data set. Just use the ```maporthogonal``` function. This will rotate the source space towards the target space; but also use a test set just to be sure. You can download datasets from vecmap repository. You will also need word embeddings, either train your own embeddings or just download from different sources like GloVe repo, MUSE or vecmap (again).
+Algorithms for bilingual lingual embedding alignments. This is a direct re-implementation of [vecmap](https://github.com/artetxem/vecmap), originally written in Python. Currently, the unsupervised bilingual alignment is implemented. The supervised version is relatively simple once you have a training dataset. Just use the ```maporthogonal``` function. This will rotate the source space towards the target space, but it's advisable to use a test set for verification. You can download datasets from the vecmap repository. You will also need word embeddings; you can either train your own embeddings or download them from various sources such as the GloVe repository, MUSE, or vecmap (again).
 
-Be aware that these algorithms do not align different representations that are trained with different models. What does it mean? It simply means that unsupervised alignment algorithms do not guarantee you to align, for instance, GloVe and FastText embeddings. It can but it may not. 
+Please note that these algorithms do not align different representations trained with different models. What does this mean? Simply put, unsupervised alignment algorithms do not guarantee alignment between, for instance, GloVe and FastText embeddings. It can happen, but it's not guaranteed.
 
-I wrote a complete chapter in my phd thesis about this phenomenon. And there seems to be no silver bullet which can rule them all. Sorry. 
+I dedicated a whole chapter in my Ph.D. thesis to this phenomenon of cross-model alignment, and it appears that there is no one-size-fits-all solution; there's no silver bullet that can address all scenarios.
+
 
 
 
@@ -16,7 +17,7 @@ I wrote a complete chapter in my phd thesis about this phenomenon. And there see
 
 
 ## Why reimplementation ? 
-The original code is pretty hard to read this prevents the understanding of the rotation matrix concept and how it is applied to word embeddings.
+The original code is pretty hard to read, hindering the understanding of the rotation matrix concept and how it is applied to word embeddings.
 
 ## Does it work on GPU ?
 Yes, it actually requires to use a gpu. **No CPU implementation**
