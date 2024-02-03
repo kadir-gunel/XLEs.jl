@@ -5,7 +5,7 @@ Algorithms for bilingual lingual embedding alignments. This is a direct re-imple
 
 Please note that these algorithms do not align different representations trained with different models. What does this mean? Simply put, unsupervised alignment algorithms do not guarantee alignment between, for instance, GloVe and FastText embeddings. It can happen, but it's not guaranteed.
 
-I dedicated a whole chapter in my Ph.D. thesis to this phenomenon of cross-model alignment, and it appears that there is no one-size-fits-all solution; there's no silver bullet that can address all scenarios.
+I dedicated a whole chapter in my PhD thesis to this phenomenon of cross-model alignment, and it appears that there is no one-size-fits-all solution; there's no silver bullet that can address all scenarios.
 
 
 
